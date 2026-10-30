@@ -1,0 +1,16 @@
+# Normalise line endings so the repo is consistent across Windows/macOS/Linux.
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF if any are ever added.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
