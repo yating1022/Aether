@@ -16,7 +16,7 @@
 | 前端 | React 19 + TypeScript + Vite 6 |
 | 数据 / 鉴权 | PocketBase（HTTP API + JS SDK）|
 | 图标 | Lucide Icons（线性）|
-| 包管理 | pnpm 11（`packageManager` 已固定版本）|
+| 包管理 | pnpm 11（`packageManager` 固定 `pnpm@11.28.9`）|
 
 ## 快速开始
 
@@ -65,6 +65,10 @@ PocketBase 的 API 地址**完全由环境变量决定**，代码里没有任何
 1. 把仓库推送到 GitHub。
 2. 把 README 顶部按钮里的 `YOUR_GITHUB_USER/YOUR_REPO` 换成实际路径，或直接在 Vercel 里 **Add New → Project → Import Git Repository**。
 3. Vercel 会自动识别 Vite（Build Command `pnpm build`，Output Directory `dist`）。
+   仓库里的 `vercel.json` 已显式声明这三项，避免检测偏差。
+   > pnpm 版本由 `package.json` 的 `packageManager` 决定（当前 `pnpm@11.28.9`）。
+   > **不要回退到 `pnpm@11.13.0`**——该版本是官方确认的坏发布（`@pnpm/exe` 里没带二进制），
+   > 会导致 Vercel 构建直接失败：`pnpm v11.13.0 is a broken release and cannot be installed`。
 4. 在 **Settings → Environment Variables** 添加：
 
    | Key | Value | 环境 |
