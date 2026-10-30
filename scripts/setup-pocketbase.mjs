@@ -235,7 +235,11 @@ async function upsertCollection(pb, def) {
 
 async function ensureEditorAccount(pb) {
   if (!PB_EDITOR_EMAIL || !PB_EDITOR_PASSWORD) {
-    log('  ! PB_EDITOR_EMAIL / PB_EDITOR_PASSWORD not set — skipping editor account');
+    log('  ! 未设置 PB_EDITOR_EMAIL / PB_EDITOR_PASSWORD，跳过创建编辑者账号');
+    log('    两种补救方式（任选其一）：');
+    log(`      1. 在 .env 里补上这两个变量后重跑 pnpm setup`);
+    log(`      2. 打开 PocketBase 后台 → Collections → ${C_EDITORS} → New record`);
+    log('         填 email + password（至少 10 位）即可，效果相同');
     return false;
   }
 
@@ -253,6 +257,7 @@ async function ensureEditorAccount(pb) {
     verified: true,
   });
   log(`  + editor created: ${PB_EDITOR_EMAIL}`);
+  log('    该密码只用于此次创建，之后可在 PocketBase 后台修改；前端产物不含任何凭据。');
   return true;
 }
 

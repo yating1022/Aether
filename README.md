@@ -113,17 +113,59 @@ PocketBase 的 API 地址**完全由环境变量决定**，代码里没有任何
 
 ## 管理态与编辑者账号
 
-编辑者账号就是 PocketBase `aether_editors`（`type: auth`）集合里的一条记录，用 PocketBase
-原生认证，前端调 `pb.collection('aether_editors').authWithPassword()`。
+先明确一件事：**编辑者的账号密码不需要写进代码、不需要打进前端产物、也不需要配到 Vercel。**
+它是一条存在 PocketBase 数据库里的账号记录，谁要管理，谁在登录框里手输即可。
 
-- 首次由 `pnpm setup` 用 `PB_EDITOR_EMAIL` / `PB_EDITOR_PASSWORD` 创建；
-- 该密码**只用于初始创建**，前端产物中不含任何凭据；
-- 之后可直接在 **PocketBase 后台 → Collections → `aether_editors` → New record** 新建/改密，
-  脚本重跑检测到账号已存在会跳过，不会覆盖你的密码；
-- 想要更多账号（比如给同事只读之外的编辑权限），在同一个集合里加记录即可，写入规则天然放行。
+### 账号在哪
 
-前端流程：点「管理」→ 未登录则弹登录框 → 登录成功进入管理态 → 可增删改分类与站点。
-登录态存于 `localStorage`（`pocketbase_auth`），刷新后保持。
+`aether_editors` 是一个 `type: auth` 集合（PocketBase 原生认证表），里面每条记录就是一个可登录账号，
+存的是邮箱 + **哈希后的**密码。前端登录走：
+
+```ts
+pb.collection('aether_editors').authWithPassword(email, password)
+```
+
+### 账号怎么来（三个变量只在这里用一次）
+
+`PB_EDITOR_EMAIL` / `PB_EDITOR_PASSWORD` **只被建表脚本读取一次**，用于创建这条记录：
+
+```bash
+# .env 里填好这两个值，然后跑一次
+pnpm setup
+```
+
+脚本检测到该邮箱已存在就跳过，**不会覆盖你后来改过的密码**。
+
+不跑脚本也行，直接在 PocketBase 后台手动建：
+**Collections → `aether_editors` → New record**，填 email + password（至少 10 位）、勾上 `verified`。
+
+### 生命周期对照
+
+| 阶段 | 账号在哪 | 需要配什么 |
+| --- | --- | --- |
+| 本地首次建表 | `.env` 里的 `PB_EDITOR_*` → 脚本写入 PocketBase | `PB_URL` + `PB_ADMIN_*` + `PB_EDITOR_*` |
+| 之后日常使用 | 只在 PocketBase 数据库里 | 什么都不用配，登录框手输 |
+| 部署到 Vercel | 同上（PB 是独立的服务器） | **只需要 `VITE_PB_URL`** |
+| 改密码 | 在 PocketBase 后台改 | 不用动代码、不用重新部署 |
+| 加同事账号 | 同一集合再加一条记录 | 同上，写入规则天然放行 |
+
+### 为什么 Vercel 上不用配账号密码
+
+前端只负责把用户输入的邮箱密码发给 PocketBase 校验，**它本身不需要知道正确密码**。
+把密码写进 `VITE_*` 变量反而会把它打包进 JS，任何访客打开 DevTools 都能看到——
+那才是真正应该避免的做法。
+
+### 前端流程
+
+点「管理」→ 未登录则弹登录框 → 登录成功进入管理态 → 可增删改分类与站点。
+登录态存于 `localStorage`（`pocketbase_auth`），刷新后保持；点登出图标即清除。
+
+### 忘记密码 / 账号被删
+
+- **改密码**：PocketBase 后台 → `aether_editors` → 打开记录 → 改 password（或点邮件重置）。
+- **账号被删了**：后台手动新建，或把 `.env` 填好重跑 `pnpm setup`。
+- **完全登不进去**：确认 `VITE_PB_URL` 指向的实例上确实存在 `aether_editors` 集合与账号；
+  控制台会给出具体原因（密码错误 / 集合不存在 / 连不上实例）。
 
 ## 图标
 

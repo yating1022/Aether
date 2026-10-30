@@ -197,10 +197,33 @@ export function isLoggedIn(): boolean {
 }
 
 export async function login(email: string, password: string): Promise<AuthUser> {
-  const result = await pb
-    .collection(EDITORS)
-    .authWithPassword<PbEditor>(email.trim(), password);
-  return { id: result.record.id, email: result.record.email };
+  try {
+    const result = await pb
+      .collection(EDITORS)
+      .authWithPassword<PbEditor>(email.trim(), password);
+    return { id: result.record.id, email: result.record.email };
+  } catch (error) {
+    throw new Error(describeAuthError(error));
+  }
+}
+
+/**
+ * PocketBase answers failed sign-ins with the English string
+ * "Failed to authenticate." — translate the cases a user can actually act on.
+ */
+function describeAuthError(error: unknown): string {
+  const status = (error as { status?: number } | null)?.status;
+
+  if (status === 400) return '邮箱或密码不正确';
+  if (status === 404) {
+    return '未找到编辑者集合，请先在本地运行 pnpm setup 完成 PocketBase 建表';
+  }
+  if (status === 0 || status === undefined) {
+    return '无法连接 PocketBase，请检查 VITE_PB_URL 是否可访问（HTTP 页面不能请求 HTTPS 之外的混合内容时也会这样）';
+  }
+  if (status === 403) return '该账号没有登录权限，请检查 aether_editors 集合的权限规则';
+  if (error instanceof Error && error.message) return error.message;
+  return '登录失败';
 }
 
 export function logout(): void {
