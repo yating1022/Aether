@@ -23,6 +23,7 @@ import {
   logout as clearSession,
   PB_CONFIG_ERROR,
   PB_URL,
+  refreshSessionIfNeeded,
   reorderLinks,
   saveBrand,
   subscribeAuth,
@@ -151,6 +152,12 @@ export default function App() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Roll the session forward before it expires, so a returning editor is not
+  // forced to sign in again after the 30-day token window.
+  useEffect(() => {
+    void refreshSessionIfNeeded();
+  }, []);
 
   // Keep UI in sync with PocketBase auth-store changes (login, logout, expiry).
   useEffect(() => {

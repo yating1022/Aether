@@ -31,7 +31,7 @@ cp .env.example .env
 pnpm setup
 
 # 3) 启动前端
-pnpm dev          # http://localhost:5173
+pnpm dev          # http://localhost:5199
 ```
 
 生产构建：
@@ -161,6 +161,23 @@ pnpm setup
 把密码写进 `VITE_*` 变量反而会把它打包进 JS，任何访客打开 DevTools 都能看到——
 那才是真正应该避免的做法。
 
+### 登录保持多久
+
+编辑者登录后**至少保持 30 天**，两层配合：
+
+1. **服务端**：`aether_editors` 集合的 `authToken.duration` 设为 `2592000` 秒（30 天）。
+   PocketBase 默认只有 5 天，这是之前"过几天就掉线"的原因。该值由建表脚本写入，可用
+   `PB_AUTH_TOKEN_DAYS`（默认 `30`）调整，`pnpm setup` 重跑即生效且幂等：
+
+   ```bash
+   PB_AUTH_TOKEN_DAYS=60 pnpm setup   # 想更长可以调到 60
+   ```
+
+2. **前端**：页面加载时若 token 剩余不足 **7 天**，自动调 `authRefresh()` 换新 token。
+   于是变成了滚动窗口 —— 只要 30 天内打开过一次，就不用重新登录。
+
+想强制全员重新登录时，在 PocketBase 后台重置该集合的 `authToken.secret` 即可（所有旧 token 立即失效）。
+
 ### 前端流程
 
 点「管理」→ 未登录则弹登录框 → 登录成功进入管理态 → 可增删改分类与站点。
@@ -253,6 +270,15 @@ pnpm setup
 只能用于 `<img src>` 显示，不能抓取后上传；纯前端无法读取目标网页 HTML，所以**不会自动填站点标题**。
 
 同一会话内同一 URL 组合只拉取一次（内存缓存）；编辑已有图标的记录且未重新获取/上传时，不会重复上传。
+
+## 本地开发端口
+
+`pnpm dev` 固定使用 **5199**（`vite.config.ts` 里 `server.port` + `strictPort`）。
+不用默认的 5173，是因为这台机器上 5173 被另一个项目占用，两个 dev server 抢同一个地址会互相顶掉。
+`strictPort: true` 的作用是端口被占时**直接报错**，而不是悄悄顺延到 5200 让人找不到。
+
+> 这个端口只影响**本地 dev server**。云平台部署（Vercel 等）不读取它 ——
+> 构建产物 `dist/` 由平台以静态文件形式在 443 上提供，部署端口与本地无关。
 
 ## 移动端
 

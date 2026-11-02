@@ -31,6 +31,7 @@ const {
   PB_EDITOR_PASSWORD,
   PB_SEED = 'true',
   PB_PREFIX = 'aether_',
+  PB_AUTH_TOKEN_DAYS = '30',
 } = process.env;
 
 const REQUIRED = ['PB_URL', 'PB_ADMIN_EMAIL', 'PB_ADMIN_PASSWORD'];
@@ -263,6 +264,49 @@ async function upsertCollection(pb, def) {
   return created;
 }
 
+/**
+ * How long an editor stays signed in, in seconds.
+ *
+ * PocketBase defaults an auth collection's token to 5 days, which is why logins
+ * dropped out after a few days. 30 days is the floor the product asked for; the
+ * frontend additionally refreshes the token when it is close to expiry, so a
+ * device that is opened at least once inside the window never has to sign in
+ * again.
+ */
+const AUTH_TOKEN_SECONDS = Math.max(1, Math.round(Number(PB_AUTH_TOKEN_DAYS) || 30)) * 86400;
+
+/**
+ * Set the editors collection token duration, preserving the existing signing
+ * secret. Changing the secret would invalidate every issued token and log all
+ * editors out, so it is read from the current collection and passed through.
+ */
+async function ensureEditorTokenDuration(pb) {
+  const collection = await findCollection(pb, C_EDITORS);
+  if (!collection) {
+    log('  ! editors collection missing — run the collections step first');
+    return false;
+  }
+
+  const current = collection.authToken ?? {};
+  const currentSeconds = Number(current.duration ?? 0);
+
+  if (currentSeconds === AUTH_TOKEN_SECONDS) {
+    log(`  = editor session: ${PB_AUTH_TOKEN_DAYS} days (unchanged)`);
+    return false;
+  }
+
+  await pb.collections.update(collection.id, {
+    authToken: {
+      ...current,
+      duration: AUTH_TOKEN_SECONDS,
+    },
+  });
+
+  const from = currentSeconds ? `${Math.round((currentSeconds / 86400) * 10) / 10} days` : 'unset';
+  log(`  ↻ editor session: ${from} → ${PB_AUTH_TOKEN_DAYS} days`);
+  return true;
+}
+
 async function ensureEditorAccount(pb) {
   if (!PB_EDITOR_EMAIL || !PB_EDITOR_PASSWORD) {
     log('  ! 未设置 PB_EDITOR_EMAIL / PB_EDITOR_PASSWORD，跳过创建编辑者账号');
@@ -387,6 +431,9 @@ async function main() {
   log('\n▸ Site branding');
   await ensureSettingsRecord(pb);
 
+  log('\n▸ Editor session');
+  await ensureEditorTokenDuration(pb);
+
   log('\n▸ Editor account');
   await ensureEditorAccount(pb);
 
@@ -402,6 +449,7 @@ async function main() {
   log('  Read access  : public (`""` rules)');
   log("  Write access : any authenticated request (`@request.auth.id != ''`)");
   log(`  Editor login : ${PB_EDITOR_EMAIL ?? '(not configured)'}`);
+  log(`  Session TTL  : ${PB_AUTH_TOKEN_DAYS} days (token duration on ${C_EDITORS})`);
   log('');
 }
 

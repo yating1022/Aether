@@ -1,4 +1,4 @@
-import PocketBase from 'pocketbase';
+import PocketBase, { getTokenPayload } from 'pocketbase';
 import { SafeAuthStore } from '../lib/authStore';
 import type {
   AuthUser,
@@ -384,6 +384,38 @@ function describeAuthError(error: unknown): string {
   if (status === 403) return '该账号没有登录权限，请检查 aether_editors 集合的权限规则';
   if (error instanceof Error && error.message) return error.message;
   return '登录失败';
+}
+
+/**
+ * Refresh the session when the token is about to expire.
+ *
+ * The editors collection issues 30-day tokens (see scripts/setup-pocketbase.mjs),
+ * which alone would sign the user out on day 31. Refreshing while the old token
+ * is still valid turns that fixed window into a rolling one: any device opened
+ * at least once inside the last week never has to sign in again.
+ *
+ * PocketBase tokens carry no `iat` — only `exp` — so this is purely a
+ * "time remaining" check.
+ */
+const REFRESH_THRESHOLD_DAYS = 7;
+const SECONDS_PER_DAY = 86400;
+
+export async function refreshSessionIfNeeded(): Promise<void> {
+  if (!isLoggedIn()) return;
+
+  const exp = getTokenPayload(pb.authStore.token)?.exp;
+  if (typeof exp !== 'number') return;
+
+  const secondsLeft = exp - Date.now() / 1000;
+  if (secondsLeft > REFRESH_THRESHOLD_DAYS * SECONDS_PER_DAY) return;
+
+  try {
+    // authRefresh() saves the new token through our SafeAuthStore.
+    await pb.collection(EDITORS).authRefresh();
+  } catch {
+    // Offline or an expired token: keep whatever session we have and let the
+    // normal login flow handle it later.
+  }
 }
 
 export function logout(): void {
