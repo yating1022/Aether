@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import type { CSSProperties } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { ArrowUpRight, Pencil, Trash2 } from 'lucide-react';
 import type { LinkItem } from '../types/nav';
 import { fallbackFaviconUrl, hostnameOf, hueOf, initialOf } from '../lib/format';
@@ -9,15 +9,31 @@ interface LinkCardProps {
   manageMode: boolean;
   onEdit: (link: LinkItem) => void;
   onDelete: (link: LinkItem) => void;
+  /**
+   * Drag activator, injected by SortableLinkCard so this component stays free of
+   * dnd-kit. Only the handle receives the listeners — dragging must not swallow
+   * the card's normal touch scrolling.
+   */
+  dragHandle?: ReactNode;
 }
 
-export function LinkCard({ link, manageMode, onEdit, onDelete }: LinkCardProps) {
+export function LinkCard({ link, manageMode, onEdit, onDelete, dragHandle }: LinkCardProps) {
   const storedIcon = link.icon?.trim() ?? '';
   const source = storedIcon || fallbackFaviconUrl(link.url);
   const [broken, setBroken] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
+  // Reset the fallback flags only when the source actually changes.
+  //
+  // The naive `useEffect(() => { setBroken(false) }, [source])` also runs on
+  // mount, which races a fast failure: a blocked/offline image fires `onError`
+  // first, then the mount effect flips `broken` back to false — and the browser
+  // never re-fires `error` for an unchanged src, so the card stays a broken
+  // image instead of showing the monogram. The ref makes the mount pass a no-op.
+  const previousSource = useRef(source);
   useEffect(() => {
+    if (previousSource.current === source) return;
+    previousSource.current = source;
     setBroken(false);
     setLoaded(false);
   }, [source]);
@@ -50,6 +66,7 @@ export function LinkCard({ link, manageMode, onEdit, onDelete }: LinkCardProps) 
         <span className="card-title">{link.title}</span>
         {manageMode ? (
           <div className="card-actions">
+            {dragHandle}
             <button
               type="button"
               className="btn btn-icon small"

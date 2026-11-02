@@ -1,5 +1,13 @@
 import PocketBase from 'pocketbase';
-import type { AuthUser, CategoryWithLinks, LinkDraft, LinkItem } from '../types/nav';
+import { SafeAuthStore } from '../lib/authStore';
+import type {
+  AuthUser,
+  BrandSettings,
+  CategoryWithLinks,
+  LinkDraft,
+  LinkItem,
+  LinkMove,
+} from '../types/nav';
 
 /* -------------------------------------------------------------------------- */
 /* client                                                                      */
@@ -18,7 +26,10 @@ export const PB_CONFIG_ERROR: string | null = PB_URL
 
 // The fallback host is never contacted: every caller bails out early when
 // PB_CONFIG_ERROR is set.
-export const pb = new PocketBase(PB_URL || 'http://127.0.0.1:8090');
+//
+// The custom auth store matters: the SDK's default LocalAuthStore is not
+// exception-safe, and it is read on every request. See lib/authStore.ts.
+export const pb = new PocketBase(PB_URL || 'http://127.0.0.1:8090', new SafeAuthStore());
 // Disable auto-cancellation so rapid filter/typing reloads don't abort each other.
 pb.autoCancellation(false);
 
@@ -27,6 +38,7 @@ pb.autoCancellation(false);
 const CATEGORIES = 'aether_categories';
 const LINKS = 'aether_links';
 const EDITORS = 'aether_editors';
+const SETTINGS = 'aether_settings';
 
 /* -------------------------------------------------------------------------- */
 /* PocketBase record shapes (internal to this layer — components never see)   */
@@ -56,6 +68,23 @@ interface PbEditor {
   id: string;
   email: string;
 }
+
+interface PbSettings {
+  id: string;
+  site_title?: string;
+  site_logo?: string;
+}
+
+/** Fallback branding used whenever the settings record is missing or empty. */
+export const DEFAULT_BRAND: BrandSettings = { title: 'Aether', logo: '' };
+
+/**
+ * Remembered id of the single settings record. The collection holds exactly one
+ * row, so once we have seen it there is no reason to spend a second round-trip
+ * re-discovering it on every save — which matters on a slow instance where each
+ * request costs seconds.
+ */
+let settingsRecordId: string | null = null;
 
 /* -------------------------------------------------------------------------- */
 /* mapping: PocketBase record -> component contract                           */
@@ -183,17 +212,148 @@ export async function deleteLink(id: string): Promise<void> {
 }
 
 /* -------------------------------------------------------------------------- */
+/* brand (single-record settings collection)                                  */
+/* -------------------------------------------------------------------------- */
+
+const LOGO_THUMB = '128x128';
+
+function toBrand(record: PbSettings | null): BrandSettings {
+  if (!record) return DEFAULT_BRAND;
+  return {
+    title: record.site_title?.trim() ?? '',
+    logo: record.site_logo ? pb.files.getURL(record, record.site_logo, { thumb: LOGO_THUMB }) : '',
+  };
+}
+
+/**
+ * Read the branding record. A missing collection or empty table is NOT an error:
+ * a freshly deployed site must still render with the built-in defaults.
+ */
+export async function loadBrand(): Promise<BrandSettings> {
+  try {
+    const record = await pb
+      .collection(SETTINGS)
+      .getFirstListItem<PbSettings>('', { sort: 'created' });
+    settingsRecordId = record.id;
+    return toBrand(record);
+  } catch (error) {
+    const status = (error as { status?: number } | null)?.status;
+    // 404 = no record yet (or collection missing) -> defaults.
+    if (status === 404) return DEFAULT_BRAND;
+    // Anything else (offline, 500) must bubble up so App can fall back to cache.
+    throw error;
+  }
+}
+
+/**
+ * Persist branding. Three shapes, because PocketBase treats the file field
+ * differently for "keep", "replace" and "clear".
+ */
+export async function saveBrand(input: {
+  title: string;
+  logo: Blob | null;
+  removeLogo: boolean;
+}): Promise<BrandSettings> {
+  const title = input.title.trim();
+  const recordId = await resolveSettingsRecordId();
+
+  let body: FormData | Record<string, unknown>;
+
+  if (input.logo) {
+    // Replace: multipart upload.
+    const form = new FormData();
+    form.set('site_title', title);
+    form.set('site_logo', input.logo, iconFilename(input.logo));
+    body = form;
+  } else if (input.removeLogo) {
+    // Clear: an empty string on a file field deletes the stored file.
+    const form = new FormData();
+    form.set('site_title', title);
+    form.set('site_logo', '');
+    body = form;
+  } else {
+    // Keep the existing file: a JSON body leaves untouched file fields alone.
+    body = { site_title: title };
+  }
+
+  const updated = await pb.collection(SETTINGS).update<PbSettings>(recordId, body);
+  return toBrand(updated);
+}
+
+/**
+ * The settings collection is single-record by convention. If the record is
+ * missing (fresh install without `pnpm setup`), create it on first save.
+ *
+ * Uses the id memoised by `loadBrand` so the common path needs no lookup.
+ */
+async function resolveSettingsRecordId(): Promise<string> {
+  if (settingsRecordId) return settingsRecordId;
+
+  try {
+    const record = await pb.collection(SETTINGS).getFirstListItem<PbSettings>('', { sort: 'created' });
+    settingsRecordId = record.id;
+    return record.id;
+  } catch (error) {
+    const status = (error as { status?: number } | null)?.status;
+    if (status !== 404) throw error;
+
+    const created = await pb.collection(SETTINGS).create<PbSettings>({ site_title: '' });
+    settingsRecordId = created.id;
+    return created.id;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* reorder                                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Apply a drag result. Only records whose category or position actually changed
+ * are patched, one at a time — a burst of parallel updates is what makes a small
+ * PocketBase instance drop connections.
+ */
+export async function reorderLinks(moves: LinkMove[]): Promise<void> {
+  for (const move of moves) {
+    await pb.collection(LINKS).update(move.id, {
+      category: move.category,
+      sort_order: move.sort_order,
+    });
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 /* auth (editors collection)                                                  */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * PocketBase's LocalAuthStore is NOT exception-safe: its `_storageGet` calls
+ * `localStorage.getItem()` *outside* the try/catch that wraps `JSON.parse`.
+ * When storage throws (Safari private mode, blocked third-party context, a
+ * denied origin) every `authStore` read throws — and because `currentUser()`
+ * runs inside a `useState` initialiser, that blanks the whole page.
+ *
+ * Guarding here keeps the failure local: the visitor simply looks logged out.
+ */
+function safeAuthModel(): PbEditor | null {
+  try {
+    return (pb.authStore.model as PbEditor | null) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export function currentUser(): AuthUser | null {
-  const model = pb.authStore.model as PbEditor | null;
+  const model = safeAuthModel();
   if (!model?.id) return null;
   return { id: model.id, email: model.email ?? '' };
 }
 
 export function isLoggedIn(): boolean {
-  return pb.authStore.isValid && currentUser() !== null;
+  try {
+    return pb.authStore.isValid && currentUser() !== null;
+  } catch {
+    return false;
+  }
 }
 
 export async function login(email: string, password: string): Promise<AuthUser> {
@@ -227,10 +387,18 @@ function describeAuthError(error: unknown): string {
 }
 
 export function logout(): void {
-  pb.authStore.clear();
+  try {
+    pb.authStore.clear();
+  } catch {
+    // Storage unavailable: nothing was persisted, so there is nothing to clear.
+  }
 }
 
 /** Subscribe to auth-store changes (login, logout, token refresh). */
 export function subscribeAuth(listener: () => void): () => void {
-  return pb.authStore.onChange(listener);
+  try {
+    return pb.authStore.onChange(listener);
+  } catch {
+    return () => {};
+  }
 }

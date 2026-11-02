@@ -1,6 +1,9 @@
 import { Plus } from 'lucide-react';
+import { useDroppable } from '@dnd-kit/core';
+import { SortableContext, rectSortingStrategy } from '@dnd-kit/sortable';
 import type { CategoryWithLinks } from '../types/nav';
 import { LinkCard } from './LinkCard';
+import { SortableLinkCard } from './SortableLinkCard';
 import type { LinkItem } from '../types/nav';
 
 interface CategorySectionProps {
@@ -27,6 +30,16 @@ export function CategorySection({
   onDeleteCategory,
 }: CategorySectionProps) {
   const dotColor = DOT_COLORS[categoryIndex % DOT_COLORS.length];
+
+  // The grid itself is the drop target so an *empty* category can still receive
+  // a card dragged from another tray.
+  const { setNodeRef, isOver } = useDroppable({
+    id: category.id,
+    data: { type: 'category', categoryId: category.id },
+    disabled: !manageMode,
+  });
+
+  const linkIds = category.links.map((link) => link.id);
 
   return (
     <section
@@ -64,16 +77,34 @@ export function CategorySection({
         </div>
       </div>
 
-      <div className="grid">
-        {category.links.map((link) => (
-          <LinkCard
-            key={link.id}
-            link={link}
-            manageMode={manageMode}
-            onEdit={onEditLink}
-            onDelete={onDeleteLink}
-          />
-        ))}
+      <div
+        ref={manageMode ? setNodeRef : undefined}
+        className="grid"
+        data-drop-target={isOver}
+      >
+        {manageMode ? (
+          <SortableContext items={linkIds} strategy={rectSortingStrategy}>
+            {category.links.map((link) => (
+              <SortableLinkCard
+                key={link.id}
+                link={link}
+                categoryId={category.id}
+                onEdit={onEditLink}
+                onDelete={onDeleteLink}
+              />
+            ))}
+          </SortableContext>
+        ) : (
+          category.links.map((link) => (
+            <LinkCard
+              key={link.id}
+              link={link}
+              manageMode={false}
+              onEdit={onEditLink}
+              onDelete={onDeleteLink}
+            />
+          ))
+        )}
 
         {manageMode ? (
           <button

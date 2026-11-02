@@ -6,6 +6,7 @@
  *   - editors     (auth)  — management UI login account
  *   - categories  (base)  — nav categories
  *   - links       (base)  — bookmarks, relation -> categories with cascadeDelete
+ *   - settings    (base)  — single-record site branding (title + logo)
  *
  * Usage:
  *   node --env-file=.env scripts/setup-pocketbase.mjs
@@ -52,6 +53,7 @@ const PREFIX = PB_PREFIX;
 const C_EDITORS = `${PREFIX}editors`;
 const C_CATEGORIES = `${PREFIX}categories`;
 const C_LINKS = `${PREFIX}links`;
+const C_SETTINGS = `${PREFIX}settings`;
 
 /** Pre-namespace collection names, renamed in place on upgrade. */
 const LEGACY_RENAMES = {
@@ -125,6 +127,34 @@ const linksDef = (categoriesId) => ({
     { name: 'sort_order', type: 'number', onlyInt: true },
   ],
 });
+
+/**
+ * Site branding. Exactly one record is expected: the frontend reads it with
+ * `getFirstListItem('')`. Public read so anonymous visitors can still see the
+ * custom title/logo; writes stay behind editor authentication.
+ */
+const settingsDef = {
+  name: C_SETTINGS,
+  type: 'base',
+  listRule: '',
+  viewRule: '',
+  createRule: AUTHED_WRITE,
+  updateRule: AUTHED_WRITE,
+  deleteRule: AUTHED_WRITE,
+  fields: [
+    { name: 'site_title', type: 'text', max: 60 },
+    {
+      name: 'site_logo',
+      type: 'file',
+      maxSelect: 1,
+      maxSize: 2097152,
+      mimeTypes: ['image/png', 'image/jpeg', 'image/webp', 'image/x-icon', 'image/gif'],
+      thumbs: ['128x128'],
+    },
+  ],
+};
+
+const DEFAULT_SITE_TITLE = 'Aether';
 
 /* ------------------------------------------------------------------ */
 /* seed data                                                           */
@@ -261,6 +291,21 @@ async function ensureEditorAccount(pb) {
   return true;
 }
 
+/**
+ * Guarantee the single settings record exists without ever clobbering branding
+ * the user has already customised.
+ */
+async function ensureSettingsRecord(pb) {
+  const existing = await pb.collection(C_SETTINGS).getList(1, 1, { fields: 'id,site_title' });
+  if (existing.totalItems > 0) {
+    log(`  = settings exists (title: ${existing.items[0].site_title || 'empty'}) — kept`);
+    return;
+  }
+
+  await pb.collection(C_SETTINGS).create({ site_title: DEFAULT_SITE_TITLE });
+  log(`  + settings created (default title: ${DEFAULT_SITE_TITLE})`);
+}
+
 async function seedData(pb) {
   const existing = await pb.collection(C_CATEGORIES).getList(1, 1, { fields: 'id' });
   if (existing.totalItems > 0) {
@@ -337,6 +382,10 @@ async function main() {
   await upsertCollection(pb, editorsDef);
   const categories = await upsertCollection(pb, categoriesDef);
   await upsertCollection(pb, linksDef(categories.id));
+  await upsertCollection(pb, settingsDef);
+
+  log('\n▸ Site branding');
+  await ensureSettingsRecord(pb);
 
   log('\n▸ Editor account');
   await ensureEditorAccount(pb);
@@ -349,7 +398,7 @@ async function main() {
   }
 
   log('\n✓ Bootstrap complete\n');
-  log(`  Collections : ${C_EDITORS} (auth), ${C_CATEGORIES} (base), ${C_LINKS} (base)`);
+  log(`  Collections : ${C_EDITORS} (auth), ${C_CATEGORIES} (base), ${C_LINKS} (base), ${C_SETTINGS} (base)`);
   log('  Read access  : public (`""` rules)');
   log("  Write access : any authenticated request (`@request.auth.id != ''`)");
   log(`  Editor login : ${PB_EDITOR_EMAIL ?? '(not configured)'}`);

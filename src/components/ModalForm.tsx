@@ -4,6 +4,7 @@ import { Check, ChevronDown, Loader2, Upload, Wand2, X } from 'lucide-react';
 import type { CategoryWithLinks, LinkDraft, LinkItem } from '../types/nav';
 import { ensureProtocol, hueOf, initialOf } from '../lib/format';
 import { fetchIcon, hostnameOf } from '../lib/icon';
+import { useDialogBehavior } from '../lib/useDialogBehavior';
 
 /* -------------------------------------------------------------------------- */
 /* shared bits                                                                */
@@ -43,26 +44,6 @@ function IconPreview({ title, url, iconUrl }: IconPreviewProps) {
       )}
     </div>
   );
-}
-
-function useDialogBehavior(onClose: () => void) {
-  const onCloseRef = useRef(onClose);
-  useEffect(() => {
-    onCloseRef.current = onClose;
-  }, [onClose]);
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onCloseRef.current();
-    };
-    document.addEventListener('keydown', onKey);
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.removeEventListener('keydown', onKey);
-      document.body.style.overflow = previousOverflow;
-    };
-  }, []);
 }
 
 /* -------------------------------------------------------------------------- */

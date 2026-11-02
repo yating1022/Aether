@@ -1,16 +1,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, Plus } from 'lucide-react';
 import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCorners,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+import type { DragEndEvent, DragOverEvent, DragStartEvent } from '@dnd-kit/core';
+import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
+import {
   createCategory,
   createLink,
   deleteCategory as removeCategory,
   deleteLink as removeLink,
   currentUser,
+  DEFAULT_BRAND,
   isLoggedIn,
+  loadBrand,
   loadNav,
   logout as clearSession,
   PB_CONFIG_ERROR,
   PB_URL,
+  reorderLinks,
+  saveBrand,
   subscribeAuth,
   updateCategory,
   updateLink,
@@ -20,9 +34,14 @@ import { SearchBar } from './components/SearchBar';
 import { CategorySection } from './components/CategorySection';
 import { CategoryModal, LinkModal } from './components/ModalForm';
 import { LoginDialog } from './components/LoginDialog';
+import { BrandModal } from './components/BrandModal';
 import { ENGINES } from './lib/engines';
+import { readCache, writeCache } from './lib/cache';
+import { readString, writeString } from './lib/storage';
+import { buildMoves, categoryOfLink, moveLink } from './lib/reorder';
 import type {
   AuthUser,
+  BrandSettings,
   CategoryWithLinks,
   EngineId,
   LinkDraft,
@@ -48,13 +67,14 @@ const THEME_STORAGE_KEY = 'aether.theme';
 const ENGINE_STORAGE_KEY = 'aether.engine';
 
 function readInitialTheme(): Theme {
-  const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+  // readString never throws — a throwing localStorage here used to blank the page.
+  const stored = readString(THEME_STORAGE_KEY);
   if (stored === 'light' || stored === 'dark') return stored;
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
 
 function readInitialEngine(): EngineId {
-  const stored = window.localStorage.getItem(ENGINE_STORAGE_KEY);
+  const stored = readString(ENGINE_STORAGE_KEY);
   if (stored === 'google' || stored === 'bing' || stored === 'baidu' || stored === 'github') {
     return stored;
   }
@@ -62,9 +82,15 @@ function readInitialEngine(): EngineId {
 }
 
 export default function App() {
-  const [categories, setCategories] = useState<CategoryWithLinks[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Seed every cached slice directly in the initialiser: the first paint then
+  // already has real content, so a warm cache never shows a loading skeleton.
+  const [cache] = useState(() => readCache());
+  const [categories, setCategories] = useState<CategoryWithLinks[]>(cache?.categories ?? []);
+  const [brand, setBrand] = useState<BrandSettings>(cache?.brand ?? DEFAULT_BRAND);
+  const [loading, setLoading] = useState(!cache);
   const [loadError, setLoadError] = useState('');
+  // True when we are showing cached content because the last sync failed.
+  const [offline, setOffline] = useState(false);
 
   const [theme, setTheme] = useState<Theme>(readInitialTheme);
   const [engine, setEngine] = useState<EngineId>(readInitialEngine);
@@ -80,6 +106,8 @@ export default function App() {
   const [categoryModal, setCategoryModal] = useState<{ editing: CategoryWithLinks | null } | null>(
     null,
   );
+  const [activeDragId, setActiveDragId] = useState<string | null>(null);
+  const [brandModalOpen, setBrandModalOpen] = useState(false);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
 
@@ -96,11 +124,25 @@ export default function App() {
       return;
     }
     try {
-      const data = await loadNav();
-      setCategories(data);
+      const [nextBrand, nextCategories] = await Promise.all([loadBrand(), loadNav()]);
+      setBrand(nextBrand);
+      setCategories(nextCategories);
       setLoadError('');
+      setOffline(false);
+      // Remote is the source of truth: a successful sync always overwrites the
+      // snapshot. `savedAt` is informational only and never used to expire.
+      writeCache({ brand: nextBrand, categories: nextCategories, savedAt: Date.now() });
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : '加载导航数据失败');
+      const cached = readCache();
+      if (cached) {
+        // Degrade to cached content instead of an error wall.
+        setBrand(cached.brand);
+        setCategories(cached.categories);
+        setLoadError('');
+        setOffline(true);
+      } else {
+        setLoadError(error instanceof Error ? error.message : '加载导航数据失败');
+      }
     } finally {
       setLoading(false);
     }
@@ -121,12 +163,16 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    writeString(THEME_STORAGE_KEY, theme);
   }, [theme]);
 
   useEffect(() => {
-    window.localStorage.setItem(ENGINE_STORAGE_KEY, engine);
+    writeString(ENGINE_STORAGE_KEY, engine);
   }, [engine]);
+
+  useEffect(() => {
+    document.title = brand.title || DEFAULT_BRAND.title;
+  }, [brand.title]);
 
   useEffect(() => {
     if (!toast) return;
@@ -185,6 +231,107 @@ export default function App() {
     () => visibleCategories.reduce((sum, category) => sum + category.links.length, 0),
     [visibleCategories],
   );
+
+  /* -------------------------------- drag -------------------------------- */
+
+  // 6px travel before a drag starts: below that a press is a click, which keeps
+  // the edit/delete buttons usable on a card that is also a drag surface.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  /** Snapshot taken when a drag starts, used to undo a failed save. */
+  const dragSnapshotRef = useRef<CategoryWithLinks[] | null>(null);
+
+  const resolveTargetCategory = (over: DragOverEvent['over']): string | null => {
+    if (!over) return null;
+    if (over.data.current?.type === 'category') return String(over.data.current.categoryId);
+    return categoryOfLink(categories, String(over.id));
+  };
+
+  const handleDragStart = (event: DragStartEvent) => {
+    dragSnapshotRef.current = categories;
+    document.body.dataset.dragging = 'true';
+    setActiveDragId(String(event.active.id));
+  };
+
+  /**
+   * Cross-tray moves are applied optimistically while dragging so the card
+   * visibly follows the pointer. Nothing is persisted until drop.
+   */
+  const handleDragOver = (event: DragOverEvent) => {
+    const overId = event.over ? String(event.over.id) : null;
+    if (!overId) return;
+    const targetCategory = resolveTargetCategory(event.over);
+    if (!targetCategory) return;
+
+    const activeId = String(event.active.id);
+    const overIsLink = event.over?.data.current?.type === 'link';
+
+    setCategories((previous) => {
+      const current = categoryOfLink(previous, activeId);
+      // Same tray: sortable handles the reordering, no need to rebuild here.
+      if (!current || current === targetCategory) return previous;
+      return moveLink(previous, activeId, targetCategory, overIsLink ? overId : null);
+    });
+  };
+
+  const finishDrag = () => {
+    delete document.body.dataset.dragging;
+    setActiveDragId(null);
+  };
+
+  const handleDragCancel = () => {
+    finishDrag();
+    if (dragSnapshotRef.current) setCategories(dragSnapshotRef.current);
+    dragSnapshotRef.current = null;
+  };
+
+  const handleDragEnd = async (event: DragEndEvent) => {
+    finishDrag();
+    const snapshot = dragSnapshotRef.current;
+    dragSnapshotRef.current = null;
+
+    const activeId = String(event.active.id);
+    const overId = event.over ? String(event.over.id) : null;
+
+    if (!overId || !snapshot) {
+      // Dropped outside any target: put everything back.
+      if (snapshot) setCategories(snapshot);
+      return;
+    }
+
+    const overIsLink = event.over?.data.current?.type === 'link';
+    const targetCategory = resolveTargetCategory(event.over);
+    const next = targetCategory
+      ? moveLink(
+          categories,
+          activeId,
+          targetCategory,
+          overIsLink && overId !== activeId ? overId : null,
+        )
+      : categories;
+
+    const moves = buildMoves(snapshot, next);
+    if (moves.length === 0) {
+      setCategories(next);
+      return;
+    }
+
+    // Optimistic: the new order stays on screen while the PATCHes run.
+    setCategories(next);
+    writeCache({ brand, categories: next, savedAt: Date.now() });
+
+    try {
+      await reorderLinks(moves);
+    } catch {
+      // Roll back to what the server still has, and say so.
+      setCategories(snapshot);
+      writeCache({ brand, categories: snapshot, savedAt: Date.now() });
+      notify('排序保存失败，已恢复原顺序', 'error');
+    }
+  };
 
   /* ------------------------------ actions ------------------------------ */
 
@@ -251,6 +398,18 @@ export default function App() {
     });
   };
 
+  const handleSubmitBrand = async (input: {
+    title: string;
+    logo: Blob | null;
+    removeLogo: boolean;
+  }) => {
+    const saved = await saveBrand(input);
+    setBrand(saved);
+    // Keep the snapshot coherent so a reload shows the new branding instantly.
+    writeCache({ brand: saved, categories, savedAt: Date.now() });
+    notify('站点设置已保存');
+  };
+
   const handleSubmitCategory = async (name: string) => {
     if (categoryModal?.editing) {
       await updateCategory(categoryModal.editing.id, name);
@@ -306,7 +465,18 @@ export default function App() {
           onCreateCategory={() => setCategoryModal({ editing: null })}
           editorEmail={user?.email ?? null}
           onLogout={handleLogout}
+          brand={brand}
+          onOpenBrand={() => setBrandModalOpen(true)}
         />
+
+        {offline ? (
+          <div className="offline-bar" role="status">
+            <span>正在展示本地缓存 · 重新连接后自动更新</span>
+            <button type="button" className="link-btn" onClick={() => void load()}>
+              重试
+            </button>
+          </div>
+        ) : null}
 
         {!manageMode ? (
           <SearchBar
@@ -360,21 +530,52 @@ export default function App() {
 
         {!loading && !loadError ? (
           visibleCategories.length > 0 ? (
-            <div className="trays">
-              {visibleCategories.map((category, index) => (
-                <CategorySection
-                  key={category.id}
-                  category={category}
-                  categoryIndex={index}
-                  manageMode={manageMode}
-                  onAddLink={(categoryId) => setLinkModal({ editing: null, categoryId })}
-                  onEditLink={(link) => setLinkModal({ editing: link, categoryId: link.category_id })}
-                  onDeleteLink={handleDeleteLink}
-                  onRenameCategory={(target) => setCategoryModal({ editing: target })}
-                  onDeleteCategory={handleDeleteCategory}
-                />
-              ))}
-            </div>
+            manageMode ? (
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCorners}
+                onDragStart={handleDragStart}
+                onDragOver={handleDragOver}
+                onDragEnd={(event) => void handleDragEnd(event)}
+                onDragCancel={handleDragCancel}
+              >
+                <div className="trays" data-active-drag={activeDragId ? 'true' : 'false'}>
+                  {visibleCategories.map((category, index) => (
+                    <CategorySection
+                      key={category.id}
+                      category={category}
+                      categoryIndex={index}
+                      manageMode
+                      onAddLink={(categoryId) => setLinkModal({ editing: null, categoryId })}
+                      onEditLink={(link) =>
+                        setLinkModal({ editing: link, categoryId: link.category_id })
+                      }
+                      onDeleteLink={handleDeleteLink}
+                      onRenameCategory={(target) => setCategoryModal({ editing: target })}
+                      onDeleteCategory={handleDeleteCategory}
+                    />
+                  ))}
+                </div>
+              </DndContext>
+            ) : (
+              <div className="trays">
+                {visibleCategories.map((category, index) => (
+                  <CategorySection
+                    key={category.id}
+                    category={category}
+                    categoryIndex={index}
+                    manageMode={false}
+                    onAddLink={(categoryId) => setLinkModal({ editing: null, categoryId })}
+                    onEditLink={(link) =>
+                      setLinkModal({ editing: link, categoryId: link.category_id })
+                    }
+                    onDeleteLink={handleDeleteLink}
+                    onRenameCategory={(target) => setCategoryModal({ editing: target })}
+                    onDeleteCategory={handleDeleteCategory}
+                  />
+                ))}
+              </div>
+            )
           ) : showEmpty ? (
             <div className="empty">
               <div className="empty-title">
@@ -429,6 +630,14 @@ export default function App() {
           defaultCategoryId={linkModal.categoryId}
           onClose={() => setLinkModal(null)}
           onSubmit={handleSubmitLink}
+        />
+      ) : null}
+
+      {brandModalOpen ? (
+        <BrandModal
+          brand={brand}
+          onClose={() => setBrandModalOpen(false)}
+          onSubmit={handleSubmitBrand}
         />
       ) : null}
 

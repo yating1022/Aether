@@ -95,9 +95,10 @@ PocketBase 的 API 地址**完全由环境变量决定**，代码里没有任何
 
 1. 超管登录；
 2. 把历史无前缀集合**原地重命名**为目标名（保留记录与 id）；
-3. `upsert` 三个集合与访问规则（保留系统字段，不会误删 `created`/`updated`）；
-4. 创建管理态账号（已存在则跳过）；
-5. `categories` 为空时写入 3 分类 / 12 站点种子数据。
+3. `upsert` 四个集合与访问规则（保留系统字段，不会误删 `created`/`updated`）；
+4. 确保站点品牌设置记录存在（**已有记录绝不覆盖**，你改过的标题/图标不会被重置）；
+5. 创建管理态账号（已存在则跳过）；
+6. `categories` 为空时写入 3 分类 / 12 站点种子数据。
 
 幂等：重复执行只同步结构，不会重复建账号或写种子数据。
 
@@ -108,6 +109,7 @@ PocketBase 的 API 地址**完全由环境变量决定**，代码里没有任何
 | `aether_editors` | **auth** | 管理态登录账号（PocketBase 原生认证表）；`createRule: null` 禁止匿名注册 |
 | `aether_categories` | base | `name`、`sort_order` |
 | `aether_links` | base | `category`(relation→categories, cascadeDelete)、`title`、`url`、`description`、`icon`(file)、`sort_order` |
+| `aether_settings` | base | **单记录**：`site_title`(text/60)、`site_logo`(file)。站点标题与图标 |
 
 - 读：`listRule` / `viewRule` = `""`（匿名可读，含图标文件）
 - 写：`createRule` / `updateRule` / `deleteRule` = `@request.auth.id != ''`
@@ -171,6 +173,55 @@ pnpm setup
 - **完全登不进去**：确认 `VITE_PB_URL` 指向的实例上确实存在 `aether_editors` 集合与账号；
   控制台会给出具体原因（密码错误 / 集合不存在 / 连不上实例）。
 
+## 站点品牌自定义
+
+左上角的标题与图标不再是写死的 JSX，而是存在 `aether_settings` 集合里的数据：
+
+- 登录后进入管理态 → 页头「站点设置」→ 改标题 / 上传图标 → 保存；
+- 图标走 PocketBase `file` 字段（不是 base64），前端拿的是 40KB 以内的 `128x128` 缩略图；
+- **没有上传图标时显示内置三角标记**，不会出现破图；
+- 「恢复默认」= 标题清空回 `Aether` + 删除图标；
+- 浏览器标签页标题（`document.title`）跟着自定义标题走。
+
+该集合按约定**只有一条记录**，`loadBrand()` 用 `getFirstListItem('')` 读取；记录缺失或集合不存在时
+直接回退默认值而**不抛错**，避免「删了一条记录整站白屏」。
+
+## 拖拽排序
+
+管理态下每张卡片左侧有一个拖拽手柄（`⋮⋮`）：
+
+- 桌面鼠标、移动端触摸、键盘（空格拾起 → 方向键 → 空格放下）都支持；
+- **支持跨分类拖动**：把网址从「开发常用」拖到「AI」，落点即新分类；
+- 只在手柄上按下才触发拖拽 —— 挂在整张卡片上会吃掉移动端的页面滚动，也会让编辑/删除按钮点不动
+  （`PointerSensor` 的 `activationConstraint.distance = 6` 是同一目的）；
+- 拖拽是乐观更新：松手立刻生效，同时后台 PATCH。**失败会自动回滚到原顺序并提示**，不会静默丢数据；
+- 只提交真正变化的记录（`category` 或 `sort_order` 变了的那些），并串行发送，避免并发打爆实例。
+
+浏览态（未点「管理」）下卡片是普通链接，不能拖动。
+
+> 排序依赖 `sort_order`。若同一分类里多条记录 `sort_order` 相同（例如都是默认 `0`），
+> 显示顺序由次级的 `created` 决定，而 `created` 相同的记录顺序是**不确定**的。
+> 拖动任意一次之后该分类会被重编为 `1..n`，顺序即固定下来。
+
+## 本地缓存与离线
+
+整站数据（品牌 + 分类 + 链接 + 图标 URL）会写入 `localStorage`，key 为 `aether.cache.v1`：
+
+- **二次打开先渲染缓存**，再去拉远程，因此不会出现 loading 骨架闪烁；
+- 远程拉取成功即**覆盖**缓存（不做 TTL，始终以远程为准）；
+- PocketBase 不可达但本地有缓存 → 照常展示内容，顶部出现一条
+  「正在展示本地缓存 · 重新连接后自动更新」的提示（带「重试」）；
+- 首次访问（无缓存）行为不变：loading → 内容 / 错误页。
+
+**离线能力的边界（重要）**：缓存的是**数据**，不是图片二进制。离线时图标若不在浏览器 HTTP 缓存里，
+会回退成首字母方块，**分类、网址、布局仍然完整可见**。要做到连图标都离线可见需要 Service Worker，
+本项目有意不做。
+
+`localStorage` 不可用（Safari 隐私模式、被禁用、配额满）时，应用自动降级为**纯在线模式**，不报错、不白屏。
+为此 `src/lib/authStore.ts` 替换了 PocketBase 自带的 `LocalAuthStore` —— 后者在
+`_storageGet` 里把 `localStorage.getItem()` 写在 try 之外，且 `send()` 每次请求都要读 token，
+一旦 storage 抛异常会导致**所有** API 调用失败。
+
 ## 图标
 
 卡片图标优先用 PocketBase `icon` 文件字段（`pb.files.getURL`，64×64 缩略图）。没有上传图标的
@@ -219,10 +270,17 @@ src/
   components/
     Header.tsx                 悬浮胶囊顶栏（品牌 / 分类筛选 / 管理态 / 登出 / 主题）
     SearchBar.tsx              搜索引擎切换 + 站内实时过滤 + 快捷键
-    CategorySection.tsx        Bento 托盘与卡片网格
+    CategorySection.tsx        Bento 托盘与卡片网格（droppable + SortableContext）
     LinkCard.tsx               网址卡片（图标 / 首字母降级 / 管理态操作）
+    SortableLinkCard.tsx       拖拽包装层（dnd-kit useSortable + 手柄）
+    BrandModal.tsx             站点设置（标题 / 图标 / 恢复默认）
     ModalForm.tsx              网址与分类弹窗（含「获取图标」与本地预览）
     LoginDialog.tsx            编辑者登录
+  lib/cache.ts                 本地快照读写（版本号 + 容错）
+  lib/storage.ts               localStorage 安全封装（永不抛错）
+  lib/authStore.ts             替换 SDK 的 LocalAuthStore（storage 抛错时仍可用）
+  lib/reorder.ts               拖拽纯逻辑（跨分类移动 / sort_order 归一化 / 最小 diff）
+  lib/useDialogBehavior.ts     弹窗共用行为（Esc 关闭 + 锁滚动）
   lib/icon.ts                  图标抓取（CORS 源 + 魔数校验 + 缓存）
   lib/format.ts                格式化与显示兜底
   lib/engines.ts               搜索引擎定义

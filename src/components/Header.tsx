@@ -1,5 +1,5 @@
-import { Check, LogOut, Moon, Plus, SlidersHorizontal, Sun } from 'lucide-react';
-import type { CategoryWithLinks, Theme } from '../types/nav';
+import { Check, LogOut, Moon, Plus, Settings2, SlidersHorizontal, Sun } from 'lucide-react';
+import type { BrandSettings, CategoryWithLinks, Theme } from '../types/nav';
 
 interface HeaderProps {
   categories: CategoryWithLinks[];
@@ -13,6 +13,8 @@ interface HeaderProps {
   onCreateCategory: () => void;
   editorEmail: string | null;
   onLogout: () => void;
+  brand: BrandSettings;
+  onOpenBrand: () => void;
 }
 
 export function Header({
@@ -27,21 +29,31 @@ export function Header({
   onCreateCategory,
   editorEmail,
   onLogout,
+  brand,
+  onOpenBrand,
 }: HeaderProps) {
   return (
     <header className="header">
       <div className="brand">
-        <span className="brand-mark" aria-hidden="true">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-            <path
-              d="M12 3.5 20 19.5H4L12 3.5Z"
-              stroke="#fff"
-              strokeWidth="2.2"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </span>
-        <span className="brand-name">Aether</span>
+        {brand.logo ? (
+          // Custom upload replaces the built-in mark. Keep the same 28x28 box so
+          // the header rhythm does not shift when the logo is swapped.
+          <span className="brand-mark brand-mark-custom" aria-hidden="true">
+            <img src={brand.logo} alt="" />
+          </span>
+        ) : (
+          <span className="brand-mark" aria-hidden="true">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+              <path
+                d="M12 3.5 20 19.5H4L12 3.5Z"
+                stroke="#fff"
+                strokeWidth="2.2"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </span>
+        )}
+        <span className="brand-name">{brand.title || 'Aether'}</span>
         {manageMode ? (
           <span className="status-pill" title={editorEmail ?? ''}>
             <span className="status-dot" />
@@ -96,6 +108,16 @@ export function Header({
             >
               <Plus size={13} strokeWidth={2.4} />
               <span className="btn-label">新建分类</span>
+            </button>
+            <button
+              type="button"
+              className="btn btn-outline"
+              onClick={onOpenBrand}
+              title="站点设置"
+              aria-label="站点设置"
+            >
+              <Settings2 size={13} strokeWidth={2} />
+              <span className="btn-label">站点设置</span>
             </button>
             <button type="button" className="btn btn-primary" onClick={onToggleManage}>
               <Check size={13} strokeWidth={2.4} />
