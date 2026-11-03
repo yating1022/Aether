@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useMemo } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { ArrowUpRight, Pencil, Trash2 } from 'lucide-react';
 import type { LinkItem } from '../types/nav';
 import { fallbackFaviconUrl, hostnameOf, hueOf, initialOf } from '../lib/format';
+import { directIconCandidates } from '../lib/icon';
+import { useIconSource } from '../lib/useIconSource';
 
 interface LinkCardProps {
   link: LinkItem;
@@ -18,45 +20,55 @@ interface LinkCardProps {
 }
 
 export function LinkCard({ link, manageMode, onEdit, onDelete, dragHandle }: LinkCardProps) {
-  const storedIcon = link.icon?.trim() ?? '';
-  const source = storedIcon || fallbackFaviconUrl(link.url);
-  const [broken, setBroken] = useState(false);
-  const [loaded, setLoaded] = useState(false);
+  /**
+   * Candidate icon sources, in priority order:
+   *   1. the file uploaded to PocketBase (explicit user choice)
+   *   2. for plain-http bookmarks, the site's own /favicon.* paths
+   *   3. a hostname-keyed icon service
+   *
+   * Plain-http targets need the `<img>`-based route because reading their bytes
+   * with `fetch()` requires CORS headers that self-hosted servers do not send.
+   * An `<img>` is not CORS-gated, so the browser can fetch it directly.
+   */
+  const candidates = useMemo(() => {
+    const stored = link.icon?.trim();
+    if (stored) return [stored];
 
-  // Reset the fallback flags only when the source actually changes.
-  //
-  // The naive `useEffect(() => { setBroken(false) }, [source])` also runs on
-  // mount, which races a fast failure: a blocked/offline image fires `onError`
-  // first, then the mount effect flips `broken` back to false — and the browser
-  // never re-fires `error` for an unchanged src, so the card stays a broken
-  // image instead of showing the monogram. The ref makes the mount pass a no-op.
-  const previousSource = useRef(source);
-  useEffect(() => {
-    if (previousSource.current === source) return;
-    previousSource.current = source;
-    setBroken(false);
-    setLoaded(false);
-  }, [source]);
+    const direct = directIconCandidates(link.url);
+    const thirdParty = fallbackFaviconUrl(link.url);
+    return [...direct, ...(thirdParty ? [thirdParty] : [])];
+  }, [link.icon, link.url]);
 
-  const showImage = Boolean(source) && !broken;
+  const { source, showImage, loaded, onLoad, onError } = useIconSource(
+    candidates,
+    `${link.id}|${link.icon}|${link.url}`,
+  );
+
   const tintStyle = {
     '--tint-h': String(hueOf(hostnameOf(link.url) || link.title)),
   } as CSSProperties;
 
+  // The monogram is always rendered underneath. Without it a card whose icon is
+  // still loading (or below the fold, where lazy loading has not started) shows
+  // an empty tinted well, which reads as broken.
   const icon = (
     <div className="card-icon" style={tintStyle} data-has-image={showImage && loaded}>
+      <span className="card-monogram">{initialOf(link.title)}</span>
       {showImage ? (
         <img
+          // Keying on the source makes React replace the element on each
+          // candidate, which is what allows the next attempt to fire its events.
+          key={source}
           src={source}
           alt=""
           loading="lazy"
           decoding="async"
-          onLoad={() => setLoaded(true)}
-          onError={() => setBroken(true)}
+          referrerPolicy="no-referrer"
+          data-ready={loaded}
+          onLoad={onLoad}
+          onError={onError}
         />
-      ) : (
-        <span className="card-monogram">{initialOf(link.title)}</span>
-      )}
+      ) : null}
     </div>
   );
 

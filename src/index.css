@@ -841,6 +841,29 @@ a.card:hover {
   border-color: transparent;
 }
 
+/* The icon well layers the monogram underneath the image, so a card never shows
+   an empty box while the favicon is still loading or has failed. */
+.card-icon,
+.preview-icon {
+  position: relative;
+}
+
+.card-icon img,
+.preview-icon img {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+/* Reveal only after the bitmap is actually decoded — swapping on `src` alone
+   leaves a blank hole during the download. */
+.card-icon img[data-ready='true'],
+.preview-icon img[data-ready='true'] {
+  opacity: 1;
+}
+
 .card-icon img {
   width: 30px;
   height: 30px;

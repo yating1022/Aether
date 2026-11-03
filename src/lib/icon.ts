@@ -144,6 +144,27 @@ function originCandidates(origin: string): string[] {
   return ORIGIN_PATHS.map((path) => `${origin}${path}`);
 }
 
+/**
+ * Icon URLs to try directly in an `<img>` tag, in order.
+ *
+ * This is the only route that works for plain-`http` bookmarks: `fetch()` needs
+ * the target to send `Access-Control-Allow-Origin`, and a self-hosted nginx/IIS
+ * almost never does — but an `<img>` is not CORS-gated at all. So instead of
+ * downloading the bytes, the browser is pointed at the candidate URLs and
+ * `onError` walks the list.
+ *
+ * Returns [] for https targets that the hostname-keyed icon services can handle
+ * better.
+ */
+export function directIconCandidates(rawUrl: string): string[] {
+  const target = analyzeTarget(rawUrl);
+  if (!target) return [];
+  // Only plain-http targets need this path; https ones are served by the icon
+  // services (which would otherwise cost an extra failed image request).
+  if (!target.origin.startsWith('http://')) return [];
+  return originCandidates(target.origin);
+}
+
 function thirdPartyCandidates(host: string): string[] {
   return [
     `https://unavatar.io/${host}?fallback=false`,

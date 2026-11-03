@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { Check, ChevronDown, Loader2, Upload, Wand2, X } from 'lucide-react';
 import type { CategoryWithLinks, LinkDraft, LinkItem } from '../types/nav';
 import { ensureProtocol, hueOf, initialOf } from '../lib/format';
 import { fetchIcon, hostnameOf } from '../lib/icon';
 import { useDialogBehavior } from '../lib/useDialogBehavior';
+import { directIconCandidates } from '../lib/icon';
+import { useIconSource } from '../lib/useIconSource';
 
 /* -------------------------------------------------------------------------- */
 /* shared bits                                                                */
@@ -17,31 +19,36 @@ interface IconPreviewProps {
 }
 
 function IconPreview({ title, url, iconUrl }: IconPreviewProps) {
-  const [broken, setBroken] = useState(false);
-  const [loaded, setLoaded] = useState(false);
+  // Same candidate cascade as the card: an explicit icon (uploaded or stored)
+  // first, then the site's own /favicon.* paths for plain-http bookmarks — those
+  // cannot be read with fetch() but load fine in an <img>.
+  const candidates = useMemo(() => {
+    const explicit = iconUrl?.trim();
+    if (explicit) return [explicit];
+    return directIconCandidates(url);
+  }, [iconUrl, url]);
 
-  useEffect(() => {
-    setBroken(false);
-    setLoaded(false);
-  }, [iconUrl]);
+  const { source, showImage, loaded, onLoad, onError } = useIconSource(candidates, candidates.join('|'));
 
   const style = {
     '--tint-h': String(hueOf(hostnameOf(url) || title)),
   } as CSSProperties;
 
   return (
-    <div className="preview-icon" style={style} data-has-image={Boolean(iconUrl) && loaded && !broken}>
-      {iconUrl && !broken ? (
+    <div className="preview-icon" style={style} data-has-image={showImage && loaded}>
+      <span className="card-monogram">{initialOf(title || '·')}</span>
+      {showImage ? (
         <img
-          src={iconUrl}
+          key={source}
+          src={source}
           alt=""
           decoding="async"
-          onLoad={() => setLoaded(true)}
-          onError={() => setBroken(true)}
+          referrerPolicy="no-referrer"
+          data-ready={loaded}
+          onLoad={onLoad}
+          onError={onError}
         />
-      ) : (
-        <span className="card-monogram">{initialOf(title || '·')}</span>
-      )}
+      ) : null}
     </div>
   );
 }
