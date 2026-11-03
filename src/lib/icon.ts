@@ -81,7 +81,9 @@ export function hostnameOf(rawUrl: string): string {
 export type IconFetchFailure =
   | 'invalid-url'
   | 'ip-or-port-unreachable'
-  | 'no-icon-found';
+  | 'no-icon-found'
+  /** https page trying to reach an http target — blocked before any request. */
+  | 'mixed-content';
 
 export interface IconFetchResult {
   blob: Blob | null;
@@ -172,13 +174,35 @@ export function iconRouteFor(rawUrl: string): IconRoute {
   return target.origin.startsWith('http://') ? 'direct' : 'service';
 }
 
+/** True when the app itself was served over HTTPS. */
+export function isSecurePage(): boolean {
+  return typeof window !== 'undefined' && window.location.protocol === 'https:';
+}
+
+/**
+ * Whether the hostname-keyed icon services can say anything useful.
+ *
+ * They resolve hostnames only: an IP literal or an explicit port is either
+ * unreachable for them or answered with a meaningless placeholder that still
+ * passes a magic-byte check. Showing a fake icon is worse than a monogram.
+ */
+export function thirdPartyApplies(rawUrl: string): boolean {
+  const target = analyzeTarget(rawUrl);
+  if (!target) return false;
+  return !target.isIpLiteral && !target.hasPort;
+}
+
 /**
  * Candidate URLs for the 'direct' route, in the order an `<img>` should try
  * them (`/favicon.ico` is very often a 404 even when `/favicon.png` exists).
- * Empty for https targets, which belong to the 'service' route.
+ *
+ * Empty for https targets (they belong to the 'service' route) and empty when
+ * the page is served over HTTPS: browsers block `http://` subresources there,
+ * so attempting them only fills the console with Mixed Content errors.
  */
 export function directIconCandidates(rawUrl: string): string[] {
   if (iconRouteFor(rawUrl) !== 'direct') return [];
+  if (isSecurePage()) return [];
   const target = analyzeTarget(rawUrl);
   return target ? originCandidates(target.origin) : [];
 }
@@ -198,17 +222,24 @@ export async function fetchIcon(url: string): Promise<IconFetchResult> {
   const target = analyzeTarget(url);
   if (!target) return { blob: null, failure: 'invalid-url' };
 
+  // A plain-http target cannot be reached from an https page at all. Reporting it
+  // up front keeps the console clean and lets the UI give an actionable hint
+  // instead of a generic failure.
+  if (iconRouteFor(url) === 'direct' && isSecurePage()) {
+    return { blob: null, failure: 'mixed-content' };
+  }
+
   const cacheKey = `${target.origin}|${target.host}`;
   const cached = CACHE.get(cacheKey);
   if (cached) return { blob: cached, failure: null };
 
   // IP literals and explicit ports cannot be resolved by hostname-based icon
   // services; only the site itself can answer, and only if it allows CORS.
-  const selfHosted = target.isIpLiteral || target.hasPort;
+  const selfHosted = !thirdPartyApplies(url);
 
-  const candidates = selfHosted
-    ? originCandidates(target.origin)
-    : [...originCandidates(target.origin), ...thirdPartyCandidates(target.host)];
+  const candidates = thirdPartyApplies(url)
+    ? [...originCandidates(target.origin), ...thirdPartyCandidates(target.host)]
+    : originCandidates(target.origin);
 
   for (const candidate of candidates) {
     const blob = await trySource(candidate);

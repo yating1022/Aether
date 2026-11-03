@@ -127,11 +127,19 @@ export function LinkModal({
 
     if (!blob) {
       setFetchState('empty');
-      setNotice(
-        failure === 'ip-or-port-unreachable'
-          ? '该地址是 IP 或带端口，图标服务无法解析它，且该站点未开放跨域读取。请点「上传图标」选择本地图片文件。'
-          : '未获取到该站点的图标。可点「上传图标」选择本地图片，或稍后重试。',
-      );
+      if (failure === 'mixed-content') {
+        setNotice(
+          '本站已部署在 HTTPS，浏览器禁止请求 http:// 图片，所以这里抓不到该项的图标。'
+            + '可在本地运行 pnpm icons 自动补齐（会存进 PocketBase），或点「上传图标」手动选择。',
+        );
+      } else if (failure === 'ip-or-port-unreachable') {
+        setNotice(
+          '该地址是 IP 或带端口，图标服务无法解析它，且该站点未开放跨域读取。'
+            + '请点「上传图标」选择本地图片文件，或在本地运行 pnpm icons。',
+        );
+      } else {
+        setNotice('未获取到该站点的图标。可点「上传图标」选择本地图片，或在本地运行 pnpm icons。');
+      }
       return;
     }
 

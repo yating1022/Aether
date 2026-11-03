@@ -193,6 +193,14 @@ function iconsFromHtml(html, baseUrl) {
       }
     }
 
+    // PocketBase's file field refuses `image/svg+xml`, and a large share of
+    // sites publish only a vector logo (e.g. AList declares logo.svg but also
+    // ships logo.png next to it). Try the raster sibling first; if it does not
+    // exist the magic-byte check rejects the HTML error body and we move on.
+    if (/\.svg(\?.*)?$/i.test(url)) {
+      found.push({ url: url.replace(/\.svg(\?.*)?$/i, '.png$1'), score: best + 1 });
+    }
+
     found.push({ url, score: best });
   }
 

@@ -3,7 +3,7 @@ import type { CSSProperties, ReactNode } from 'react';
 import { ArrowUpRight, Pencil, Trash2 } from 'lucide-react';
 import type { LinkItem } from '../types/nav';
 import { fallbackFaviconUrl, hostnameOf, hueOf, initialOf } from '../lib/format';
-import { directIconCandidates, iconRouteFor } from '../lib/icon';
+import { directIconCandidates, iconRouteFor, thirdPartyApplies } from '../lib/icon';
 import { useIconSource } from '../lib/useIconSource';
 
 interface LinkCardProps {
@@ -35,17 +35,18 @@ export function LinkCard({ link, manageMode, onEdit, onDelete, dragHandle }: Lin
     const stored = link.icon?.trim();
     if (stored) return [stored];
 
+    // Services only make sense for real hostnames: for an IP literal or an
+    // explicit port they answer with a placeholder that is worse than a monogram.
+    const thirdParty = thirdPartyApplies(link.url) ? fallbackFaviconUrl(link.url) : '';
+
     if (iconRouteFor(link.url) === 'direct') {
-      // http: the site's own paths, loaded by <img> (no CORS involved).
+      // http: the site's own paths, loaded by <img> (no CORS involved). Empty on
+      // an https deployment, where the browser blocks those requests outright.
       const direct = directIconCandidates(link.url);
-      // A plain-http *domain* can still be served by the icon services, so keep
-      // them as a last resort; IP/port targets get nothing here on purpose.
-      const thirdParty = fallbackFaviconUrl(link.url);
       return [...direct, ...(thirdParty ? [thirdParty] : [])];
     }
 
     // https: original route, unchanged.
-    const thirdParty = fallbackFaviconUrl(link.url);
     return thirdParty ? [thirdParty] : [];
   }, [link.icon, link.url]);
 

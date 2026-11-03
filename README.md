@@ -251,6 +251,11 @@ pnpm setup
 判定函数只有一处：`src/lib/icon.ts` 的 `iconRouteFor()`；脚本 `scripts/fetch-icons.mjs` 的
 `routeFor()` 与之保持一致。运行 `pnpm icons` 时每行会标注 `[service]` / `[direct]`，可以直观看到走了哪条。
 
+**部署在 HTTPS 时，http 书签的图标只能靠 `pnpm icons` 补齐**：浏览器不允许 HTTPS 页面请求
+`http://` 资源（混合内容），页面里抓不到，所以「获取图标」按钮在这种情况下会直接给出提示而不是
+去发请求（否则控制台会刷一堆 Mixed Content 报错）。跑一次脚本，图标存进 PocketBase，
+线上就是普通 HTTPS 图片，正常显示。
+
 **为什么 http 不能走原方案**：第三方服务只按 **hostname** 查询，端口会被丢掉；
 `http://1.2.3.4:8095` 会被它们当成 `http://1.2.3.4/`（80 端口，完全是另一个服务），
 内网 IP 它们更是根本访问不到。
@@ -276,7 +281,9 @@ pnpm icons --dry      # 只报告会抓什么，不上传
 1. 解析页面 HTML 里的 `<link rel="icon">`（按 `sizes` 取最大）—— 能找到放在
    `/assets/favicon-xxxx.png` 这类非标准路径的图标
 2. 探 `/favicon.ico` → `/favicon.png` → `/apple-touch-icon.png`
-3. 域名（非 IP）再试第三方服务（`unavatar.io` → `icon.horse`）——
+3. 声明的是 SVG 时，先试**同名的 `.png`**（很多站点 `logo.svg` 与 `logo.png` 并存，
+   例如 AList/OpenList 的 `/logo.svg` 旁边就有 `/logo.png`）
+4. 域名（非 IP）再试第三方服务（`unavatar.io` → `icon.horse`）——
    专治「站点只发 SVG」：PocketBase 的 file 字段**故意不收 `image/svg+xml`**（SVG 能带脚本），
    第三方服务会返回 PNG/JPEG
 
