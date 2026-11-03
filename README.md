@@ -241,35 +241,46 @@ pnpm setup
 
 ## 图标
 
-卡片图标优先用 PocketBase `icon` 文件字段（`pb.files.getURL`，64×64 缩略图）。没有上传图标的
-记录回退到 `icon.horse` 显示源，加载失败再降级为站点首字母徽标——任何情况下都不会出现裂图。
+图标有两条路径，**推荐用脚本批量抓**：
 
-弹窗里的「获取图标」在浏览器端完成：
+### 脚本抓取（Node，无 CORS 限制）
 
+```bash
+pnpm icons            # 只处理还没有图标的书签
+pnpm icons --force    # 全部重抓并覆盖
+pnpm icons --dry      # 只报告会抓什么，不上传
 ```
-1) https://unavatar.io/{host}?fallback=false   ← CORS *，缺失时 404
-2) https://icon.horse/icon/{host}              ← CORS *，缺失时给占位图
-校验：HTTP 200 && bytes > 200 && 魔数 ∈ {PNG, JPEG, WEBP, ICO, GIF}
-```
 
-抓到后本地预览（`blob:`），**保存时才以 `FormData` 上传为 PocketBase 文件**。
+为什么必须是脚本：浏览器里 `fetch()` 读跨域图标要求对方服务器发
+`Access-Control-Allow-Origin`，自建 nginx/IIS（`http://内网IP:端口` 这类书签）根本不会发；
+而且站点一旦部署在 HTTPS，浏览器还会拦截 `http://` 图片（混合内容）。
+**Node 两个限制都没有**，所以在这里抓、存成 PocketBase 文件，之后所有客户端都能正常显示
+（包括部署在 Vercel 的 HTTPS 站点）。
 
-### 无法自动获取的情况（以及为什么）
+每个书签的查找顺序：
 
-| 情况 | 为什么失败 |
-| --- | --- |
-| `http://1.2.3.4:8095`（IP / 带端口） | 图标服务只按**主机名**查询，端口被丢弃 → 它们去查 80 端口，那是另一个服务；裸 IP 本身也没有注册图标 |
-| 站点只用 `/favicon.png` 或 `/apple-touch-icon.png` | 我们的兜底只探 `/favicon.ico`；且该站点若不发 CORS 头，浏览器读不到字节 |
-| 自托管站点不发 CORS | 浏览器同源策略，`fetch` 拿不到响应体，**无法上传** |
-| 内网 / localhost 地址 | 第三方服务在外网，访问不到你的内网 |
+1. 解析页面 HTML 里的 `<link rel="icon">`（按 `sizes` 取最大）—— 能找到放在
+   `/assets/favicon-xxxx.png` 这类非标准路径的图标
+2. 探 `/favicon.ico` → `/favicon.png` → `/apple-touch-icon.png`
+3. 域名（非 IP）再试第三方服务（`unavatar.io` → `icon.horse`）——
+   专治「站点只发 SVG」：PocketBase 的 file 字段**故意不收 `image/svg+xml`**（SVG 能带脚本），
+   第三方服务会返回 PNG/JPEG
 
-**兜底方案：弹窗里的「上传图标」。** 选一张本地图片（PNG / JPEG / WEBP / ICO / GIF，≤ 2 MB），
-和自动抓取一样会本地预览、保存时上传为 PocketBase 文件。任何站点都能这样配上图标。
+校验：魔数（PNG/JPEG/WEBP/ICO/GIF）+ 最小 200 字节 + 最大 2MB，HTML 错误页不会被当成图标存进去。
 
-其它限制：`google.com/s2/favicons`、`icons.duckduckgo.com`、`favicon.im` 不带 CORS，
-只能用于 `<img src>` 显示，不能抓取后上传；纯前端无法读取目标网页 HTML，所以**不会自动填站点标题**。
+新增书签后重跑 `pnpm icons` 即可补齐。
 
-同一会话内同一 URL 组合只拉取一次（内存缓存）；编辑已有图标的记录且未重新获取/上传时，不会重复上传。
+### 浏览器端兜底
+
+没有存文件的 `http://` 书签，卡片会直接让 `<img>` 去试站点自己的
+`/favicon.ico` → `/favicon.png` → `/apple-touch-icon.png` → `/favicon.svg`
+（`<img>` 不受 CORS 限制）。这条路只在**站点自身通过 HTTP 访问**时有效，
+线上 HTTPS 会被混合内容拦掉 —— 所以别依赖它，用脚本。
+
+### 手动上传
+
+剩下的兜底：编辑书签 → 上传图标（PNG / JPEG / WEBP / ICO / GIF，≤ 2 MB）。
+有些系统（例如只返回 HTML 软 404 的 IIS 应用）压根没有 favicon，只能手传。
 
 ## 本地开发端口
 
@@ -291,6 +302,7 @@ pnpm setup
 
 ```
 scripts/setup-pocketbase.mjs   建表 / 规则 / 账号 / 种子（幂等）
+scripts/fetch-icons.mjs        批量抓取图标（Node，无 CORS 限制）
 src/
   api/pocketbase.ts            PocketBase 单例 + 领域函数 + PB→LinkItem 映射（唯一适配层）
   components/

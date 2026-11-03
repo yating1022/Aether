@@ -12,7 +12,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "setup": "node --env-file=.env scripts/setup-pocketbase.mjs"
+    "setup": "node --env-file=.env scripts/setup-pocketbase.mjs",
+    "icons": "node --env-file=.env scripts/fetch-icons.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
