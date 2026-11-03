@@ -144,25 +144,43 @@ function originCandidates(origin: string): string[] {
   return ORIGIN_PATHS.map((path) => `${origin}${path}`);
 }
 
+/* -------------------------------------------------------------------------- */
+/* two icon routes                                                             */
+/* -------------------------------------------------------------------------- */
+
 /**
- * Icon URLs to try directly in an `<img>` tag, in order.
+ * Which strategy a bookmark uses. The two are kept strictly separate because
+ * they solve different problems:
  *
- * This is the only route that works for plain-`http` bookmarks: `fetch()` needs
- * the target to send `Access-Control-Allow-Origin`, and a self-hosted nginx/IIS
- * almost never does — but an `<img>` is not CORS-gated at all. So instead of
- * downloading the bytes, the browser is pointed at the candidate URLs and
- * `onError` walks the list.
+ *   'service' (https) — the original approach: the hostname-keyed icon services
+ *       answer over HTTPS with CORS enabled, so this has always worked. Nothing
+ *       about it changes.
  *
- * Returns [] for https targets that the hostname-keyed icon services can handle
- * better.
+ *   'direct'  (http)  — the new approach. A plain-`http` target is usually a
+ *       self-hosted nginx/IIS on an IP or a custom port: the services cannot
+ *       resolve it (they drop the port and cannot reach a LAN address), and
+ *       `fetch()` cannot read it either because those servers send no
+ *       `Access-Control-Allow-Origin`. So we stop downloading bytes and let an
+ *       `<img>` tag — which is not CORS-gated — load the site's own
+ *       /favicon.* directly.
+ */
+export type IconRoute = 'service' | 'direct';
+
+export function iconRouteFor(rawUrl: string): IconRoute {
+  const target = analyzeTarget(rawUrl);
+  if (!target) return 'service';
+  return target.origin.startsWith('http://') ? 'direct' : 'service';
+}
+
+/**
+ * Candidate URLs for the 'direct' route, in the order an `<img>` should try
+ * them (`/favicon.ico` is very often a 404 even when `/favicon.png` exists).
+ * Empty for https targets, which belong to the 'service' route.
  */
 export function directIconCandidates(rawUrl: string): string[] {
+  if (iconRouteFor(rawUrl) !== 'direct') return [];
   const target = analyzeTarget(rawUrl);
-  if (!target) return [];
-  // Only plain-http targets need this path; https ones are served by the icon
-  // services (which would otherwise cost an extra failed image request).
-  if (!target.origin.startsWith('http://')) return [];
-  return originCandidates(target.origin);
+  return target ? originCandidates(target.origin) : [];
 }
 
 function thirdPartyCandidates(host: string): string[] {

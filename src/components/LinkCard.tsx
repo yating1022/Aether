@@ -3,7 +3,7 @@ import type { CSSProperties, ReactNode } from 'react';
 import { ArrowUpRight, Pencil, Trash2 } from 'lucide-react';
 import type { LinkItem } from '../types/nav';
 import { fallbackFaviconUrl, hostnameOf, hueOf, initialOf } from '../lib/format';
-import { directIconCandidates } from '../lib/icon';
+import { directIconCandidates, iconRouteFor } from '../lib/icon';
 import { useIconSource } from '../lib/useIconSource';
 
 interface LinkCardProps {
@@ -31,12 +31,22 @@ export function LinkCard({ link, manageMode, onEdit, onDelete, dragHandle }: Lin
    * An `<img>` is not CORS-gated, so the browser can fetch it directly.
    */
   const candidates = useMemo(() => {
+    // A file uploaded to PocketBase always wins — that is an explicit choice.
     const stored = link.icon?.trim();
     if (stored) return [stored];
 
-    const direct = directIconCandidates(link.url);
+    if (iconRouteFor(link.url) === 'direct') {
+      // http: the site's own paths, loaded by <img> (no CORS involved).
+      const direct = directIconCandidates(link.url);
+      // A plain-http *domain* can still be served by the icon services, so keep
+      // them as a last resort; IP/port targets get nothing here on purpose.
+      const thirdParty = fallbackFaviconUrl(link.url);
+      return [...direct, ...(thirdParty ? [thirdParty] : [])];
+    }
+
+    // https: original route, unchanged.
     const thirdParty = fallbackFaviconUrl(link.url);
-    return [...direct, ...(thirdParty ? [thirdParty] : [])];
+    return thirdParty ? [thirdParty] : [];
   }, [link.icon, link.url]);
 
   const { source, showImage, loaded, onLoad, onError } = useIconSource(

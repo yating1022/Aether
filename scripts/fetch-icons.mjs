@@ -235,47 +235,78 @@ async function tryIconUrl(url) {
   }
 }
 
-/** Full search for one bookmark: HTML-declared icons first, then known paths. */
-async function findIcon(link) {
-  let origin;
+/**
+ * Two routes, mirroring `src/lib/icon.ts`:
+ *
+ *   https → ORIGINAL route. The hostname-keyed icon services have always handled
+ *           these; keep the same order as before (the site's own paths first,
+ *           then the services) and do not change anything about it.
+ *
+ *   http  → NEW route. These targets are self-hosted nginx/IIS on an IP or a
+ *           custom port, which the services cannot resolve and whose responses
+ *           the browser cannot read (no CORS header). Here we additionally parse
+ *           the page's own `<link rel="icon">`, which is the only way to find an
+ *           icon that lives at a non-standard path (e.g. GitLab's
+ *           /assets/favicon-<hash>.png).
+ */
+function routeFor(url) {
   try {
-    origin = new URL(link.url).origin;
+    return new URL(url).protocol === 'http:' ? 'direct' : 'service';
+  } catch {
+    return null;
+  }
+}
+
+async function findIcon(link) {
+  const route = routeFor(link.url);
+  if (!route) return { icon: null, reason: 'invalid-url' };
+
+  let origin;
+  let hostname;
+  try {
+    const parsed = new URL(link.url);
+    origin = parsed.origin;
+    hostname = parsed.hostname;
   } catch {
     return { icon: null, reason: 'invalid-url' };
   }
 
+  const isIpLiteral = IPV4.test(hostname) || hostname.startsWith('[');
   const candidates = [];
 
-  // 1. What the page itself declares.
-  try {
-    const response = await fetchWithTimeout(link.url, { accept: 'text/html,*/*' });
-    if (response.ok) {
-      const html = (await readCapped(response, HTML_CAP))?.toString('utf8') ?? '';
-      candidates.push(...iconsFromHtml(html, response.url || link.url));
+  // New route only: read what the page itself declares.
+  if (route === 'direct') {
+    try {
+      const response = await fetchWithTimeout(link.url, { accept: 'text/html,*/*' });
+      if (response.ok) {
+        const html = (await readCapped(response, HTML_CAP))?.toString('utf8') ?? '';
+        candidates.push(...iconsFromHtml(html, response.url || link.url));
+      }
+    } catch {
+      // Page unreachable; the path probes below still run.
     }
-  } catch {
-    // Site unreachable over the page URL; the path probes below still run.
   }
 
-  // 2. Conventional locations.
+  // Both routes probe the conventional locations.
   candidates.push(...ORIGIN_PATHS.map((path) => `${origin}${path}`));
 
-  // 3. Hostname-keyed services last: they are the only way to get a raster icon
-  //    for a site that publishes just an SVG, which the file field will not take.
-  const hostname = new URL(link.url).hostname;
-  const isIpLiteral = IPV4.test(hostname) || hostname.startsWith('[');
-  const thirdParty = isIpLiteral ? [] : thirdPartyCandidates(hostname);
+  // Services are hostname-keyed: useless (and misleading) for IP literals.
+  if (!isIpLiteral) candidates.push(...thirdPartyCandidates(hostname));
 
   const tried = new Set();
-  for (const candidate of [...candidates, ...thirdParty]) {
+  for (const candidate of candidates) {
     if (tried.has(candidate)) continue;
     tried.add(candidate);
 
     const icon = await tryIconUrl(candidate);
-    if (icon) return { icon, source: candidate };
+    if (icon) return { icon, source: candidate, route };
   }
 
-  return { icon: null, reason: isIpLiteral ? 'no-icon-on-this-host' : 'no-icon-found' };
+  return {
+    icon: null,
+    route,
+    reason: isIpLiteral ? 'no-icon-on-this-host' : 'no-icon-found',
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -304,18 +335,18 @@ async function main() {
 
   for (const [index, link] of targets.entries()) {
     const label = `[${String(index + 1).padStart(3)}/${targets.length}] ${link.title}`;
-    const { icon, source, reason } = await findIcon(link);
+    const { icon, source, reason, route } = await findIcon(link);
 
     if (!icon) {
       skipped += 1;
       failures.push({ title: link.title, url: link.url, reason });
-      console.log(`${label}  ✗ ${reason}`);
+      console.log(`${label}  ✗ [${route}] ${reason}`);
       continue;
     }
 
     if (DRY) {
       saved += 1;
-      console.log(`${label}  → ${source} (${icon.kind}, ${icon.buffer.byteLength} B)`);
+      console.log(`${label}  → [${route}] ${source} (${icon.kind}, ${icon.buffer.byteLength} B)`);
       continue;
     }
 
@@ -324,7 +355,9 @@ async function main() {
       form.set('icon', new Blob([icon.buffer], { type: MIME_BY_KIND[icon.kind] }), `icon.${EXT_BY_KIND[icon.kind]}`);
       await pb.collection(C_LINKS).update(link.id, form);
       saved += 1;
-      console.log(`${label}  ✓ ${icon.kind} ${Math.round(icon.buffer.byteLength / 1024)}KB  ← ${source}`);
+      console.log(
+        `${label}  ✓ [${route}] ${icon.kind} ${Math.round(icon.buffer.byteLength / 1024)}KB  ← ${source}`,
+      );
     } catch (error) {
       skipped += 1;
       failures.push({ title: link.title, url: link.url, reason: `upload failed: ${error?.message ?? error}` });
